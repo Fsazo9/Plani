@@ -436,14 +436,22 @@ function cvDates(cv){
   const m=(cv.text||'').match(/\d{4}-\d{2}-\d{2}/g);
   return m?[pd(m[0]),pd(m[m.length-1])]:[null,null];
 }
+// Etapa canónica conservando el número de etapa repetida: "Enlace Operacional 2", "EO2", "EO 2" → "Enlace Operacional 2"
 function etapaOf(s){
   const n=norm(s);if(!n)return null;
-  if(n==='dp'||n.includes('definic'))return ETAPAS[0];
-  if(n==='do'||n.includes('diseno'))return ETAPAS[1];
-  if(n==='pc'||n.includes('preparac'))return ETAPAS[2];
-  if(n==='eo'||n.includes('enlace'))return ETAPAS[3];
-  return null;
+  let base=null,num='';
+  const code=n.match(/^(dp|do|pc|eo)\s*(\d+)?$/);
+  if(code){base={dp:0,do:1,pc:2,eo:3}[code[1]];num=code[2]||'';}
+  else{
+    const K=[[0,/definic\w*(?:\s+(?:de|del)?\s*proyecto)?/],[1,/diseno(?:\s+operativo)?/],[2,/preparac\w*(?:\s+(?:de|del)?\s*campana)?/],[3,/enlace(?:\s+operacional)?/]];
+    for(const[i,re]of K){const m=n.match(new RegExp(re.source+'\\s*(?:n[°ºo.]?\\s*)?(\\d+)?\\b'));if(m){base=i;num=m[1]||'';break;}}
+  }
+  if(base==null)return null;
+  return ETAPAS[base]+(num?' '+num:'');
 }
+const isPlanEt=e=>ETAPAS.some(b=>e===b||String(e).startsWith(b+' '));
+function etRank(e){const i=ETAPAS.findIndex(b=>e===b||String(e).startsWith(b+' '));if(i<0)return 9999;const m=String(e).slice(ETAPAS[i].length).match(/\d+/);return i*100+(m?+m[0]:1);}
+const etSort=(a,b)=>etRank(a)-etRank(b)||String(a).localeCompare(String(b),'es');
 
 function normalizeBoard(b,items){
   const C=resolveCols(b.columns||[]);
@@ -649,7 +657,7 @@ $('#bExcel').onclick=()=>MOD==='alr'?exportAlerts():exportXL();
 // FILTROS
 // ════════════════════════════════════════════════════════════
 function passes(r,skip,ignorePlan){
-  if(F.onlyPlan&&!ignorePlan&&!ETAPAS.includes(r.etapa))return false;
+  if(F.onlyPlan&&!ignorePlan&&!isPlanEt(r.etapa))return false;
   for(const{k}of FDEF){if(k===skip)continue;const s=F.sel[k];if(s.size&&!s.has(r[k]))return false;}
   if(F.from&&(!r.planFin||r.planFin<F.from))return false;
   if(F.to&&(!r.planFin||r.planFin>F.to))return false;
@@ -665,7 +673,7 @@ function refresh(){
   FR=ST.rows.filter(r=>!r.excl&&passes(r));
   FRA=ST.rows.filter(r=>!r.excl&&passes(r,null,true));   // alertas: incluye ítems sin etapa (sin etapa también se alerta)
   const excl=ST.rows.filter(r=>r.excl&&passes(r)).length;
-  const hiddenEt=F.onlyPlan?ST.rows.filter(r=>!r.excl&&!ETAPAS.includes(r.etapa)).length:0;
+  const hiddenEt=F.onlyPlan?ST.rows.filter(r=>!r.excl&&!isPlanEt(r.etapa)).length:0;
   $('#fcount').textContent=`${fN(FR.length)} actividades`;
   updBadge();
   const notes=[];
@@ -712,7 +720,7 @@ $('#fbtns').onclick=e=>{
   ST.rows.forEach(r=>{if(!r.excl&&passes(r,k))cnt.set(r[k],(cnt.get(r[k])||0)+1);});
   let opts=[...cnt.keys()];
   if(k==='estado')opts.sort((a,b)=>E_ORDER.indexOf(a)-E_ORDER.indexOf(b));
-  else if(k==='etapa')opts.sort((a,b)=>(ETAPAS.indexOf(a)+1||99)-(ETAPAS.indexOf(b)+1||99)||String(a).localeCompare(b,'es'));
+  else if(k==='etapa')opts.sort(etSort);
   else opts.sort((a,b)=>String(a).localeCompare(String(b),'es'));
   F.sel[k].forEach(v=>{if(!cnt.has(v)){opts.push(v);cnt.set(v,0);}});
   openPop(b,'f:'+k,opts.map(v=>({v,n:cnt.get(v)})),F.sel[k],v=>{F.sel[k]=v;renderFBtns();refresh();});
@@ -881,7 +889,7 @@ function chartsRes(){
          scales:{y:{min:0,max:100,ticks:{callback:v=>v+'%',font:{size:10}},grid:{color:'#eef1f5'}},x:{grid:{display:false},ticks:{font:{size:10}}}}}});
    }}
   // Por etapa
-  {const ks=[...new Set(FR.map(r=>r.etapa))].sort((a,b)=>(ETAPAS.indexOf(a)+1||99)-(ETAPAS.indexOf(b)+1||99));
+  {const ks=[...new Set(FR.map(r=>r.etapa))].sort(etSort);
    stackedByEstado('chEt',FR,r=>r.etapa,ks,'etapa',false);}
   // Por área
   {const c={};FR.forEach(r=>c[r.area]=(c[r.area]||0)+1);
@@ -893,7 +901,7 @@ function vProy(){
   const T=total(FR);
   const rows=agg(FR,r=>r.proj+'§'+r.year).map(a=>{const[p,y]=a.k.split('§');return{...a,proj:p,year:y};});
   // matriz proyecto × etapa (% cumplimiento)
-  const et=ETAPAS.filter(e=>FR.some(r=>r.etapa===e)).concat([...new Set(FR.map(r=>r.etapa))].filter(e=>!ETAPAS.includes(e)));
+  const et=[...new Set(FR.map(r=>r.etapa))].sort(etSort);
   const m={};FR.forEach(r=>{const k=r.proj;(m[k]=m[k]||{});const a=(m[k][r.etapa]=m[k][r.etapa]||newAgg(''));addAgg(a,r);});
   const mrows=Object.entries(m).map(([p,o])=>{const row={proj:p};et.forEach(e=>{row[e]=o[e]?finAgg(o[e]).pDone:null;row[e+'_n']=o[e]?o[e].n:0;});return row;});
   return `<div class="sec-title">Indicadores por proyecto</div>
@@ -1129,3 +1137,4 @@ function exportXL(){
 </script>
 </body>
 </html>
+
