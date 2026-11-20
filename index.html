@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Estaus Proyectos Planificación — Monday.com</title>
+<title>Resumen Tareas Planificación — Monday.com</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
@@ -251,7 +251,8 @@ const FDEF=[
   {k:'year',l:'Año'},{k:'ws',l:'Espacio'},{k:'proj',l:'Proyecto'},{k:'etapa',l:'Etapa'},
   {k:'area',l:'Área'},{k:'resp',l:'Responsable'},{k:'avance',l:'Avance'},{k:'estado',l:'Estado plazo'},
 ];
-const TODAY=(()=>{const d=new Date();d.setHours(0,0,0,0);return d;})();
+let TODAY=new Date();TODAY.setHours(0,0,0,0);
+function resetToday(){TODAY=new Date();TODAY.setHours(0,0,0,0);}   // se recalcula en cada carga/actualización
 const DAY=86400000;
 
 // ════════════════════════════════════════════════════════════
@@ -292,10 +293,11 @@ function status(id,msg,err){const el=$(id);el.textContent=msg;el.classList.toggl
 // MONDAY API
 // ════════════════════════════════════════════════════════════
 async function gql(query,tries=0){
-  const url=ST.proxy?'https://corsproxy.io/?url='+encodeURIComponent(API):API;
+  // sin caché: el proxy y el navegador no deben devolver respuestas antiguas
+  const url=ST.proxy?'https://corsproxy.io/?url='+encodeURIComponent(API+'?_='+Date.now()):API;
   let r;
   try{
-    r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':ST.key,'API-Version':API_VER},body:JSON.stringify({query})});
+    r=await fetch(url,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Authorization':ST.key,'API-Version':API_VER,'Cache-Control':'no-cache'},body:JSON.stringify({query})});
   }catch(e){
     throw new Error('No se pudo conectar con Monday.com (red o bloqueo CORS).'+(location.protocol==='file:'?' Estás abriendo el archivo localmente: súbelo a GitHub Pages / un servidor web, o activa el proxy.':''));
   }
@@ -602,6 +604,7 @@ async function loadData(){
   const bar=$('#prog div');bar.style.width='0';
   status('#st3','Descargando ítems…');
   try{
+    resetToday();EV.clear();
     const rows=await fetchItems(ids,(d,t,name)=>{bar.style.width=(d/t*100)+'%';status('#st3',`Tablero ${d}/${t}: ${name}`);});
     ST.rows=rows;ST.nBoards=ids.length;ST.loadedAt=new Date();
     const noPlan=new Set(rows.filter(r=>!r.hasPlanCol).map(r=>r.board));
@@ -646,10 +649,33 @@ window.addEventListener('hashchange',()=>{const m=Object.keys(MODULES).find(k=>M
 $('#tabs').onclick=e=>{const b=e.target.closest('.tab');if(!b)return;TABSEL[MOD]=b.dataset.t;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));renderView();};
 function updBadge(){const el=$('#alrBadge');if(el){const n=FRA.filter(r=>evalTask(r).status!==S.OK).length;el.textContent=fN(n);el.style.display=n?'':'none';}}
 $('#bConfig').onclick=()=>{$('#app').classList.add('hidden');$('#setup').classList.remove('hidden');['bRefresh','bPrint','bExcel','modnav'].forEach(id=>$('#'+id).classList.add('hidden'));};
-$('#bRefresh').onclick=async()=>{$('#bRefresh').disabled=true;$('#bRefresh').textContent='↻ Actualizando…';
-  try{const rows=await fetchItems([...ST.selBoards],()=>{});ST.rows=rows;ST.loadedAt=new Date();openApp();}
-  catch(e){alert('Error al actualizar: '+e.message);}
-  finally{$('#bRefresh').disabled=false;$('#bRefresh').textContent='↻ Actualizar';}};
+// huella de los campos que importan, para detectar qué cambió entre cargas
+const fp=r=>[r.item,r.generico,r.group,r.etapaCol,r.areaCol,r.respCol,r.avance,+r.planIni||'',+r.planFin||'',+r.realIni||'',+r.realFin||'',r.plazoEst].join('|');
+$('#bRefresh').onclick=async()=>{
+  const btn=$('#bRefresh');btn.disabled=true;
+  const ids=[...ST.selBoards];
+  try{
+    resetToday();
+    const before=new Map(ST.rows.map(r=>[r.itemId,fp(r)]));
+    const rows=await fetchItems(ids,(d,t)=>{btn.textContent=`↻ Actualizando ${d}/${t}…`;});
+    ST.rows=rows;ST.loadedAt=new Date();ST.nBoards=ids.length;
+    EV.clear();                                   // limpia la evaluación de alertas en caché
+    let changed=0,added=0;
+    rows.forEach(r=>{const b=before.get(r.itemId);if(b==null)added++;else if(b!==fp(r))changed++;before.delete(r.itemId);});
+    const removed=before.size;
+    openApp();
+    toast(changed||added||removed
+      ?`✓ Actualizado ${ST.loadedAt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'})}: ${changed} ítem(s) modificado(s), ${added} nuevo(s), ${removed} eliminado(s)`
+      :`✓ Actualizado ${ST.loadedAt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'})}: sin cambios respecto de la carga anterior`);
+  }catch(e){toast('Error al actualizar: '+e.message,true);}
+  finally{btn.disabled=false;btn.textContent='↻ Actualizar';}
+};
+function toast(msg,err){
+  let t=$('#toast');
+  if(!t){t=document.createElement('div');t.id='toast';t.style.cssText='position:fixed;right:18px;bottom:18px;z-index:300;max-width:460px;padding:.7rem 1rem;border-radius:10px;font-size:.82rem;box-shadow:0 8px 24px rgba(15,23,42,.2);color:#fff;transition:opacity .3s';document.body.appendChild(t);}
+  t.style.background=err?'#c62828':'#0f172a';t.textContent=msg;t.style.opacity='1';
+  clearTimeout(t._h);t._h=setTimeout(()=>{t.style.opacity='0';},err?9000:6000);
+}
 $('#bPrint').onclick=()=>window.print();
 $('#bExcel').onclick=()=>MOD==='alr'?exportAlerts():exportXL();
 
@@ -1137,4 +1163,5 @@ function exportXL(){
 </script>
 </body>
 </html>
+
 
