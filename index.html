@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Resumen Tareas Planificación — Monday.com</title>
+<title>Dashboard Ejecutivo de Planificación — Monday.com</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
@@ -70,6 +70,14 @@ input,select{font-family:inherit}
 .pagehead p{font-size:.78rem;color:var(--ink3);margin-top:.15rem;max-width:720px}
 .pagehead .ctl{margin-left:auto;display:flex;gap:.45rem;align-items:center;flex-wrap:wrap}
 .pagehead.alr h2{color:var(--over)}
+/* ── filtro de rango de fechas ── */
+#dpop h4{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink2);margin:.15rem 0 .1rem}
+#dpop .presets{display:grid;grid-template-columns:repeat(3,1fr);gap:.3rem}
+#dpop .presets button{border:1px solid var(--line2);background:#fff;border-radius:6px;padding:.3rem .2rem;font-size:.72rem;color:var(--ink2)}
+#dpop .presets button:hover{border-color:var(--navy);color:var(--navy)}
+#dpop .presets button.on{background:var(--navy-soft);border-color:var(--navy);color:var(--navy);font-weight:600}
+#dpop .dr{display:flex;gap:.4rem;align-items:center}
+#dpop .dr input{flex:1;border:1px solid var(--line2);border-radius:6px;padding:.3rem .4rem;font-size:.78rem}
 /* ── app ── */
 .fbar{background:var(--card);border-bottom:1px solid var(--line);padding:.6rem 1.4rem;display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;position:sticky;top:57px;z-index:40}
 .fbtn{border:1px solid var(--line2);background:#fff;border-radius:99px;padding:.28rem .7rem;font-size:.76rem;color:var(--ink2);display:inline-flex;gap:.3rem;align-items:center}
@@ -216,8 +224,7 @@ tfoot td{font-weight:700;background:#f7f9fc;border-top:1px solid var(--line2)}
     <input class="fsearch" id="fq" placeholder="🔍 Buscar actividad, proyecto…"/>
     <span id="fbtns" style="display:contents"></span>
     <span class="fsep"></span>
-    <span class="muted">Fin plan</span>
-    <input type="date" class="fdate" id="fFrom"/><span class="muted">a</span><input type="date" class="fdate" id="fTo"/>
+    <button class="fbtn" id="fDate">📅 Rango de fechas ▾</button>
     <span class="fsep"></span>
     <label class="chk" style="margin:0"><input type="checkbox" id="fPlan" checked/> Solo etapas de planificación</label>
     <button class="btn sm" id="fClear">✕ Limpiar filtros</button>
@@ -232,6 +239,7 @@ tfoot td{font-weight:700;background:#f7f9fc;border-top:1px solid var(--line2)}
 </section>
 
 <div class="pop hidden" id="pop"></div>
+<div class="pop hidden" id="dpop" style="width:340px;max-height:none"></div>
 
 <script>
 'use strict';
@@ -259,7 +267,7 @@ const DAY=86400000;
 // STATE
 // ════════════════════════════════════════════════════════════
 const ST={key:'',proxy:false,ws:[],boards:[],selWs:new Set(),selBoards:new Set(),rows:[],loadedAt:null,nBoards:0,boardCols:{}};
-const F={sel:{},q:'',from:null,to:null,onlyPlan:true};
+const F={sel:{},q:'',from:null,to:null,dfield:'periodo',preset:'',onlyPlan:true};
 FDEF.forEach(f=>F.sel[f.k]=new Set());
 let FR=[],FRA=[];            // filas filtradas activas
 let MOD='dash';                       // módulo / página activa
@@ -685,8 +693,7 @@ $('#bExcel').onclick=()=>MOD==='alr'?exportAlerts():exportXL();
 function passes(r,skip,ignorePlan){
   if(F.onlyPlan&&!ignorePlan&&!isPlanEt(r.etapa))return false;
   for(const{k}of FDEF){if(k===skip)continue;const s=F.sel[k];if(s.size&&!s.has(r[k]))return false;}
-  if(F.from&&(!r.planFin||r.planFin<F.from))return false;
-  if(F.to&&(!r.planFin||r.planFin>F.to))return false;
+  if((F.from||F.to)&&!inDateRange(r))return false;
   if(F.q&&!r._h.includes(F.q))return false;
   return true;
 }
@@ -696,6 +703,7 @@ function renderFBtns(){
     return `<button class="fbtn ${n?'on':''}" data-k="${f.k}">${txt} ▾</button>`;}).join('');
 }
 function refresh(){
+  if(F.preset){const[a,b]=presetRange(F.preset);F.from=a;F.to=b;}   // los atajos se recalculan con la fecha de corte vigente
   FR=ST.rows.filter(r=>!r.excl&&passes(r));
   FRA=ST.rows.filter(r=>!r.excl&&passes(r,null,true));   // alertas: incluye ítems sin etapa (sin etapa también se alerta)
   const excl=ST.rows.filter(r=>r.excl&&passes(r)).length;
@@ -710,10 +718,99 @@ function refresh(){
 }
 let refreshT;const refreshSoon=()=>{clearTimeout(refreshT);refreshT=setTimeout(refresh,180);};
 $('#fq').oninput=e=>{F.q=norm(e.target.value);refreshSoon();};
-$('#fFrom').onchange=e=>{F.from=pd(e.target.value);refresh();};
-$('#fTo').onchange=e=>{F.to=pd(e.target.value);refresh();};
+
+// ── Filtro de rango de fechas ──
+const DFIELDS=[
+  {k:'periodo',l:'Período planificado',d:'Actividades cuyo plan (inicio → fin) se cruza con el rango'},
+  {k:'planFin',l:'Fin plan',d:'Fecha de término planificada dentro del rango'},
+  {k:'planIni',l:'Inicio plan',d:'Fecha de inicio planificada dentro del rango'},
+  {k:'realIni',l:'Inicio real',d:'Fecha de inicio real dentro del rango'},
+  {k:'realFin',l:'Fin real',d:'Fecha de término real dentro del rango'},
+];
+function inDateRange(r){
+  const lo=F.from||new Date(-8.64e15),hi=F.to||new Date(8.64e15);
+  if(F.dfield==='periodo'){
+    const a=r.planIni||r.planFin,b=r.planFin||r.planIni;
+    return !!a&&a<=hi&&b>=lo;
+  }
+  const v=r[F.dfield];return !!v&&v>=lo&&v<=hi;
+}
+function addD(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x;}
+function presetRange(k){
+  const t=new Date(TODAY),y=t.getFullYear(),m=t.getMonth();
+  const mon=addD(t,-((t.getDay()+6)%7));                  // lunes de esta semana
+  const q=Math.floor(m/3)*3;
+  switch(k){
+    case 'hoy':return[t,t];
+    case 'sem':return[mon,addD(mon,6)];
+    case 'semAnt':return[addD(mon,-7),addD(mon,-1)];
+    case 'semSig':return[addD(mon,7),addD(mon,13)];
+    case 'mes':return[new Date(y,m,1),new Date(y,m+1,0)];
+    case 'mesAnt':return[new Date(y,m-1,1),new Date(y,m,0)];
+    case 'mesSig':return[new Date(y,m+1,1),new Date(y,m+2,0)];
+    case 'ult30':return[addD(t,-29),t];
+    case 'prox30':return[t,addD(t,29)];
+    case 'trim':return[new Date(y,q,1),new Date(y,q+3,0)];
+    case 'anio':return[new Date(y,0,1),new Date(y,11,31)];
+    case 'hasta':return[null,t];
+  }
+  return[null,null];
+}
+const PRESETS=[['hoy','Hoy'],['sem','Esta semana'],['semAnt','Semana pasada'],['semSig','Próxima semana'],['mes','Este mes'],['mesAnt','Mes anterior'],['mesSig','Próximo mes'],['ult30','Últimos 30 días'],['prox30','Próximos 30 días'],['trim','Este trimestre'],['anio','Este año'],['hasta','Hasta hoy']];
+const iso=d=>d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`:'';
+const fShort=d=>d?`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(2)}`:'';
+function renderDateBtn(){
+  const b=$('#fDate');const on=!!(F.from||F.to);
+  b.classList.toggle('on',on);
+  if(!on){b.innerHTML='📅 Rango de fechas ▾';return;}
+  const fl=DFIELDS.find(f=>f.k===F.dfield).l;
+  const pr=PRESETS.find(p=>p[0]===F.preset);
+  const rng=pr?pr[1]:(F.from&&F.to?`${fShort(F.from)} – ${fShort(F.to)}`:F.from?`desde ${fShort(F.from)}`:`hasta ${fShort(F.to)}`);
+  b.innerHTML=`📅 ${esc(fl)}: <strong>${esc(rng)}</strong> ▾`;
+}
+const dpop=$('#dpop');let dDraft=null;
+function drawDpop(){
+  const d=dDraft;
+  dpop.innerHTML=`<h4>Aplicar el rango a</h4>
+    <select class="inp" id="dpField" style="padding:.35rem .5rem;font-size:.8rem">${DFIELDS.map(f=>`<option value="${f.k}" ${f.k===d.dfield?'selected':''}>${f.l}</option>`).join('')}</select>
+    <div class="muted" style="margin-top:-.15rem">${esc(DFIELDS.find(f=>f.k===d.dfield).d)}</div>
+    <h4>Atajos</h4>
+    <div class="presets">${PRESETS.map(([k,l])=>`<button data-p="${k}" class="${d.preset===k?'on':''}">${l}</button>`).join('')}</div>
+    <h4>Rango personalizado</h4>
+    <div class="dr"><input type="date" id="dpFrom" value="${iso(d.from)}"/><span class="muted">a</span><input type="date" id="dpTo" value="${iso(d.to)}"/></div>
+    <div class="foot"><button class="btn sm" data-d="clear">Quitar rango</button><button class="btn sm pri" data-d="ok">Aplicar</button></div>`;
+}
+$('#fDate').onclick=e=>{
+  e.stopPropagation();
+  if(!dpop.classList.contains('hidden')){dpop.classList.add('hidden');return;}
+  closePop();
+  dDraft={dfield:F.dfield,from:F.from,to:F.to,preset:F.preset};
+  drawDpop();
+  const r=e.currentTarget.getBoundingClientRect();
+  dpop.style.top=(r.bottom+window.scrollY+4)+'px';
+  dpop.style.left=Math.max(8,Math.min(r.left+window.scrollX,window.innerWidth-350))+'px';
+  dpop.classList.remove('hidden');
+};
+dpop.addEventListener('click',e=>{
+  e.stopPropagation();
+  const p=e.target.closest('[data-p]');
+  if(p){const[a,b]=presetRange(p.dataset.p);Object.assign(dDraft,{from:a,to:b,preset:p.dataset.p});drawDpop();return;}
+  const a=e.target.dataset.d;
+  if(a==='clear'){F.from=F.to=null;F.preset='';dpop.classList.add('hidden');renderDateBtn();refresh();}
+  if(a==='ok'){
+    let{from,to}=dDraft;if(from&&to&&from>to)[from,to]=[to,from];
+    Object.assign(F,{dfield:dDraft.dfield,from,to,preset:dDraft.preset});
+    dpop.classList.add('hidden');renderDateBtn();refresh();
+  }
+});
+dpop.addEventListener('change',e=>{
+  if(e.target.id==='dpField'){dDraft.dfield=e.target.value;drawDpop();}
+  if(e.target.id==='dpFrom'){dDraft.from=pd(e.target.value);dDraft.preset='';drawDpop();}
+  if(e.target.id==='dpTo'){dDraft.to=pd(e.target.value);dDraft.preset='';drawDpop();}
+});
+document.addEventListener('click',()=>dpop.classList.add('hidden'));
 $('#fPlan').onchange=e=>{F.onlyPlan=e.target.checked;refresh();};
-$('#fClear').onclick=()=>{FDEF.forEach(f=>F.sel[f.k].clear());F.q='';F.from=F.to=null;$('#fq').value='';$('#fFrom').value='';$('#fTo').value='';renderFBtns();refresh();};
+$('#fClear').onclick=()=>{FDEF.forEach(f=>F.sel[f.k].clear());F.q='';F.from=F.to=null;F.preset='';$('#fq').value='';renderFBtns();renderDateBtn();refresh();};
 function setFilter(k,v){F.sel[k]=new Set([v]);renderFBtns();refresh();}
 
 // popup multi-select genérico: opts=[{v,l,n}], sel=Set, onApply(Set)
